@@ -1,23 +1,25 @@
 const fs = require('fs');
 
 // ─── Config ────────────────────────────────────────────────────────────────
-const SUPABASE_URL = process.env.SUPABASE_URL;   // set in GitHub Secrets
-const SUPABASE_KEY = process.env.SUPABASE_KEY;   // set in GitHub Secrets
-const TABLE        = 'property';
-const BASE_URL     = 'https://www.getsetsold.ca/real-estate';
-const SITEMAP_PATH = './public/sitemap.xml';
+const SUPABASE_URL   = process.env.SUPABASE_URL;
+const SUPABASE_KEY   = process.env.SUPABASE_KEY;
+const TABLE          = 'property';
+const BASE_URL       = 'https://www.getsetsold.ca/real-estate';
+const SITEMAP_HOST   = 'https://listings.getsetsold.ca';
+const PUBLIC_DIR     = './public';
+const CHUNK_SIZE     = 45000; // stay safely under Google's 50k limit
 // ───────────────────────────────────────────────────────────────────────────
 
-// Supabase REST has a 1000-row default limit — this loops until all rows fetched
 async function fetchAllListings() {
-  let all      = [];
-  let from     = 0;
-  const limit  = 1000;
+  let all     = [];
+  let from    = 0;
+  const limit = 1000;
 
   console.log('📦 Fetching listings from Supabase...');
 
   while (true) {
-    const url = `${SUPABASE_URL}/rest/v1/${TABLE}` +
+    const url =
+      `${SUPABASE_URL}/rest/v1/${TABLE}` +
       `?select=ListingURL,ModificationTimestamp,OriginalEntryTimestamp` +
       `&limit=${limit}&offset=${from}`;
 
@@ -34,13 +36,12 @@ async function fetchAllListings() {
     }
 
     const data = await res.json();
-
     if (!Array.isArray(data) || data.length === 0) break;
 
-    all  = all.concat(data);
+    all = all.concat(data);
     console.log(`  → fetched ${all.length} listings so far...`);
 
-    if (data.length < limit) break; // last page
+    if (data.length < limit) break;
     from += limit;
   }
 
@@ -48,13 +49,9 @@ async function fetchAllListings() {
 }
 
 function buildSlug(listingURL) {
-  // Handles all these formats safely:
-  //   www.realtor.ca/real-estate/25569111/slug
-  //   https://www.realtor.ca/real-estate/25569111/slug
-  //   25569111/slug   (already a slug)
   return listingURL
     .replace(/^(https?:\/\/)?(www\.)?realtor\.ca\/real-estate\//, '')
-    .replace(/\/$/, '')   // remove trailing slash
+    .replace(/\/$/, '')
     .trim();
 }
 
@@ -85,8 +82,29 @@ function buildSitemapXML(listings) {
   );
 }
 
+function buildSitemapIndexXML(totalChunks) {
+  const today = new Date().toISOString().split('T')[0];
+
+  const sitemapBlocks = Array.from({ length: totalChunks }, (_, i) => {
+    const num = i + 1;
+    return (
+      `  <sitemap>\n` +
+      `    <loc>${SITEMAP_HOST}/sitemap-${num}.xml</loc>\n` +
+      `    <lastmod>${today}</lastmod>\n` +
+      `  </sitemap>`
+    );
+  });
+
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?>\n` +
+    `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+    sitemapBlocks.join('\n') + '\n' +
+    `</sitemapindex>`
+  );
+}
+
 async function pingGoogle() {
-  const sitemapUrl = encodeURIComponent('https://listings.getsetsold.ca/sitemap.xml');
+  const sitemapUrl = encodeURIComponent(`${SITEMAP_HOST}/sitemap.xml`);
   try {
     const res = await fetch(`https://www.google.com/ping?sitemap=${sitemapUrl}`);
     console.log(`📡 Google ping: ${res.status === 200 ? '✅ success' : `⚠️  status ${res.status}`}`);
@@ -103,13 +121,30 @@ async function run() {
   const listings = await fetchAllListings();
   console.log(`✅ Total listings fetched: ${listings.length}`);
 
-  const xml = buildSitemapXML(listings);
+  fs.mkdirSync(PUBLIC_DIR, { recursive: true });
 
-  fs.mkdirSync('./public', { recursive: true });
-  fs.writeFileSync(SITEMAP_PATH, xml, 'utf8');
-  console.log(`✅ Sitemap written → ${SITEMAP_PATH}`);
-  console.log(`   Contains ${listings.length} URLs`);
-  console.log(`   Preview: ${BASE_URL}/${buildSlug(listings[0]?.ListingURL ?? 'n/a')}`);
+  // Split into chunks of CHUNK_SIZE
+  const chunks = [];
+  for (let i = 0; i < listings.length; i += CHUNK_SIZE) {
+    chunks.push(listings.slice(i, i + CHUNK_SIZE));
+  }
+
+  console.log(`📄 Splitting into ${chunks.length} sitemap file(s) of up to ${CHUNK_SIZE} URLs each...`);
+
+  // Write each sitemap-N.xml
+  chunks.forEach((chunk, i) => {
+    const num      = i + 1;
+    const filename = `${PUBLIC_DIR}/sitemap-${num}.xml`;
+    const xml      = buildSitemapXML(chunk);
+    fs.writeFileSync(filename, xml, 'utf8');
+    console.log(`  ✅ sitemap-${num}.xml → ${chunk.length} URLs`);
+  });
+
+  // Write sitemap.xml as the index
+  const indexXml = buildSitemapIndexXML(chunks.length);
+  fs.writeFileSync(`${PUBLIC_DIR}/sitemap.xml`, indexXml, 'utf8');
+  console.log(`✅ sitemap.xml (index) → points to ${chunks.length} sitemap files`);
+  console.log(`   Submit this to Google: ${SITEMAP_HOST}/sitemap.xml`);
 
   await pingGoogle();
 }
