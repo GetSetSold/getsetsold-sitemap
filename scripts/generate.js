@@ -18,7 +18,7 @@ async function fetchAllListings() {
 
   while (true) {
     const url = `${SUPABASE_URL}/rest/v1/${TABLE}` +
-      `?select=ListingURL,updated_at` +
+      `?select=ListingURL,ModificationTimestamp,OriginalEntryTimestamp` +
       `&limit=${limit}&offset=${from}`;
 
     const res = await fetch(url, {
@@ -65,7 +65,7 @@ function buildSitemapXML(listings) {
     .filter((l) => l.ListingURL && l.ListingURL.trim() !== '')
     .map((l) => {
       const slug    = buildSlug(l.ListingURL);
-      const lastmod = l.updated_at ? l.updated_at.split('T')[0] : today;
+      const lastmod = (l.ModificationTimestamp || l.OriginalEntryTimestamp || today).split('T')[0];
 
       return (
         `  <url>\n` +
