@@ -86,7 +86,7 @@ function buildSitemapXML(listings) {
 }
 
 async function pingGoogle() {
-  const sitemapUrl = encodeURIComponent('https://mls.getsetsold.ca/sitemap.xml');
+  const sitemapUrl = encodeURIComponent('https://listings.getsetsold.ca/sitemap.xml');
   try {
     const res = await fetch(`https://www.google.com/ping?sitemap=${sitemapUrl}`);
     console.log(`📡 Google ping: ${res.status === 200 ? '✅ success' : `⚠️  status ${res.status}`}`);
