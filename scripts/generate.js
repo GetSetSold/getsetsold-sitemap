@@ -1,13 +1,20 @@
 const fs = require('fs');
 
 // ─── Config ────────────────────────────────────────────────────────────────
-const SUPABASE_URL   = process.env.SUPABASE_URL;
-const SUPABASE_KEY   = process.env.SUPABASE_KEY;
-const TABLE          = 'property';
-const BASE_URL       = 'https://www.getsetsold.ca/real-estate';
-const SITEMAP_HOST   = 'https://listings.getsetsold.ca';
-const PUBLIC_DIR     = './public';
-const CHUNK_SIZE     = 45000; // stay safely under Google's 50k limit
+const SUPABASE_URL      = process.env.SUPABASE_URL;
+const SUPABASE_KEY      = process.env.SUPABASE_KEY;
+const TABLE             = 'property';
+const BASE_URL          = 'https://www.getsetsold.ca/real-estate';
+const SITEMAP_HOST      = 'https://listings.getsetsold.ca';
+const PUBLIC_DIR        = './public';
+const CHUNK_SIZE        = 45000; // stay safely under Google's 50k limit
+
+// ─── IndexNow Config ───────────────────────────────────────────────────────
+const INDEXNOW_KEY      = '975deb2fa4f34a198c0468286722e45c';
+const INDEXNOW_HOST     = 'www.getsetsold.ca';
+const INDEXNOW_KEY_URL  = `https://www.getsetsold.ca/${INDEXNOW_KEY}.txt`;
+const INDEXNOW_ENDPOINT = 'https://api.indexnow.org/indexnow';
+const INDEXNOW_BATCH    = 10000; // Bing allows up to 10,000 URLs per request
 // ───────────────────────────────────────────────────────────────────────────
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -125,20 +132,17 @@ async function fetchAllCities() {
 
     for (const row of data) {
       if (row.City && row.City.trim()) {
-        // "Brampton" → "brampton"
-        // "Brampton (Northwest Sandalwood Parkway)" → "brampton-northwest-sandalwood-parkway"
-        // "St. Catharines" → "st-catharines"
         const slug = row.City
           .trim()
           .toLowerCase()
-          .replace(/\s*\(/g, ' (')         // normalize space before opening paren
-          .replace(/\)\s*/g, ') ')         // normalize space after closing paren
-          .replace(/\s*\(\s*/g, '-')       // replace "( " with "-"
-          .replace(/\s*\)\s*/g, '')        // remove closing ")"
-          .replace(/[.\s]+/g, '-')          // dots and spaces → hyphens
-          .replace(/[^a-z0-9-]/g, '')       // strip non-alphanumeric
-          .replace(/-+/g, '-')              // collapse multiple hyphens
-          .replace(/^-|-$/g, '');           // trim leading/trailing hyphens
+          .replace(/\s*\(/g, ' (')
+          .replace(/\)\s*/g, ') ')
+          .replace(/\s*\(\s*/g, '-')
+          .replace(/\s*\)\s*/g, '')
+          .replace(/[.\s]+/g, '-')
+          .replace(/[^a-z0-9-]/g, '')
+          .replace(/-+/g, '-')
+          .replace(/^-|-$/g, '');
 
         if (slug) allCities.add(slug);
       }
@@ -162,79 +166,57 @@ const BEDS = [1, 2, 3, 4, 5];
 // Bathroom counts to generate
 const BATHS = [1, 2, 3];
 
-// Price brackets for sale listings (varied ranges for different markets)
+// Price brackets for sale listings
 const SALE_PRICE_BRACKETS = [
-  { min: 100000, max: 200000 },
-  { min: 200000, max: 300000 },
-  { min: 300000, max: 400000 },
-  { min: 400000, max: 500000 },
-  { min: 500000, max: 600000 },
-  { min: 600000, max: 700000 },
-  { min: 700000, max: 800000 },
-  { min: 800000, max: 900000 },
-  { min: 900000, max: 1000000 },
-  { min: 1000000, max: 1500000 },
-  { min: 1500000, max: 2000000 },
-  { min: 2000000, max: 3000000 },
-  { min: 3000000, max: 5000000 },
+  { min: 100000,  max: 200000   },
+  { min: 200000,  max: 300000   },
+  { min: 300000,  max: 400000   },
+  { min: 400000,  max: 500000   },
+  { min: 500000,  max: 600000   },
+  { min: 600000,  max: 700000   },
+  { min: 700000,  max: 800000   },
+  { min: 800000,  max: 900000   },
+  { min: 900000,  max: 1000000  },
+  { min: 1000000, max: 1500000  },
+  { min: 1500000, max: 2000000  },
+  { min: 2000000, max: 3000000  },
+  { min: 3000000, max: 5000000  },
   { min: 5000000, max: 10000000 },
 ];
 
 // Price brackets for lease listings
 const LEASE_PRICE_BRACKETS = [
-  { min: 500, max: 1000 },
-  { min: 1000, max: 1500 },
-  { min: 1500, max: 2000 },
-  { min: 2000, max: 2500 },
-  { min: 2500, max: 3000 },
-  { min: 3000, max: 4000 },
-  { min: 4000, max: 5000 },
-  { min: 5000, max: 7500 },
+  { min: 500,  max: 1000  },
+  { min: 1000, max: 1500  },
+  { min: 1500, max: 2000  },
+  { min: 2000, max: 2500  },
+  { min: 2500, max: 3000  },
+  { min: 3000, max: 4000  },
+  { min: 4000, max: 5000  },
+  { min: 5000, max: 7500  },
   { min: 7500, max: 10000 },
 ];
 
-/**
- * Generate all filter page URLs for listings
- * Strategy: generate smart combinations without creating millions of URLs
- *
- * Tier 1 (high priority) — ~3,200 URLs:
- *   - city + listingType (sale/lease) for all cities
- *   - city + type (structure) for top structure types
- *
- * Tier 2 (medium priority) — ~18,000 URLs:
- *   - city + type + beds for popular types
- *   - city + type + beds + baths
- *
- * Tier 3 (lower priority) — ~8,500 URLs:
- *   - city + listingType + price brackets
- *   - city + type + price brackets
- */
 function generateFilterPageURLs(cities) {
   const urls = [];
   const today = new Date().toISOString().split('T')[0];
 
-  // Helper to add URL with priority
   function addURL(path, priority, changefreq) {
     urls.push({ loc: `https://www.getsetsold.ca${path}`, priority, changefreq, lastmod: today });
   }
 
-  const TOP_TYPES = ['House', 'Condo', 'Townhouse', 'Apartment'];
-  const ALL_TYPES = STRUCTURE_TYPES;
+  const TOP_TYPES      = ['House', 'Condo', 'Townhouse', 'Apartment'];
+  const remainingTypes = STRUCTURE_TYPES.filter(t => !TOP_TYPES.includes(t));
 
-  // ── Tier 1: city × listingType ──
-  // e.g. /listings?city=Cayuga&listingType=sale
+  // Tier 1: city × listingType
   console.log('  🔹 Tier 1: city × listingType...');
   for (const city of cities) {
-    // Base city page (no filter = shows all)
-    addURL(`/listings?city=${city}`, '0.9', 'daily');
-    // For Sale
-    addURL(`/listings?city=${city}&listingType=sale`, '0.9', 'daily');
-    // For Lease
+    addURL(`/listings?city=${city}`,                   '0.9', 'daily');
+    addURL(`/listings?city=${city}&listingType=sale`,  '0.9', 'daily');
     addURL(`/listings?city=${city}&listingType=lease`, '0.8', 'daily');
   }
 
-  // ── Tier 1b: city × structure type ──
-  // e.g. /listings?city=Cayuga&type=House
+  // Tier 1b: city × structure type (top 4)
   console.log('  🔹 Tier 1b: city × structure type (top 4)...');
   for (const city of cities) {
     for (const type of TOP_TYPES) {
@@ -242,8 +224,7 @@ function generateFilterPageURLs(cities) {
     }
   }
 
-  // ── Tier 2: city × type × beds ──
-  // e.g. /listings?city=Cayuga&type=House&beds=2
+  // Tier 2: city × type × beds
   console.log('  🔹 Tier 2: city × type × beds...');
   for (const city of cities) {
     for (const type of TOP_TYPES) {
@@ -253,8 +234,7 @@ function generateFilterPageURLs(cities) {
     }
   }
 
-  // ── Tier 2b: city × type × beds × baths ──
-  // e.g. /listings?city=Cayuga&type=House&beds=2&baths=2
+  // Tier 2b: city × type × beds × baths
   console.log('  🔹 Tier 2b: city × type × beds × baths...');
   for (const city of cities) {
     for (const type of TOP_TYPES) {
@@ -269,8 +249,7 @@ function generateFilterPageURLs(cities) {
     }
   }
 
-  // ── Tier 3: city × listingType × price brackets (sale) ──
-  // e.g. /listings?city=Cayuga&listingType=sale&priceMin=300000&priceMax=400000
+  // Tier 3: city × listingType × price brackets (sale)
   console.log('  🔹 Tier 3: city × listingType × price brackets (sale)...');
   for (const city of cities) {
     for (const bracket of SALE_PRICE_BRACKETS) {
@@ -281,7 +260,7 @@ function generateFilterPageURLs(cities) {
     }
   }
 
-  // ── Tier 3b: city × listingType × price brackets (lease) ──
+  // Tier 3b: city × listingType × price brackets (lease)
   console.log('  🔹 Tier 3b: city × listingType × price brackets (lease)...');
   for (const city of cities) {
     for (const bracket of LEASE_PRICE_BRACKETS) {
@@ -292,17 +271,15 @@ function generateFilterPageURLs(cities) {
     }
   }
 
-  // ── Tier 3c: city × type × listingType (sale) ──
-  // Remaining structure types (less popular ones)
+  // Tier 3c: city × remaining structure types
   console.log('  🔹 Tier 3c: city × all structure types (remaining)...');
-  const remainingTypes = ALL_TYPES.filter(t => !TOP_TYPES.includes(t));
   for (const city of cities) {
     for (const type of remainingTypes) {
       addURL(`/listings?city=${city}&type=${encodeURIComponent(type)}`, '0.5', 'weekly');
     }
   }
 
-  // ── Tier 3d: remaining types × beds ──
+  // Tier 3d: city × remaining types × beds
   console.log('  🔹 Tier 3d: city × remaining types × beds...');
   for (const city of cities) {
     for (const type of remainingTypes) {
@@ -319,28 +296,25 @@ function generateFilterPageURLs(cities) {
 }
 
 // ─── XML helper ─────────────────────────────────────────────────────────────
-// Ampersands in query strings must be escaped as &amp; inside XML tags.
 function escapeXml(str) {
   return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+    .replace(/&/g,  '&amp;')
+    .replace(/</g,  '&lt;')
+    .replace(/>/g,  '&gt;')
+    .replace(/"/g,  '&quot;')
+    .replace(/'/g,  '&apos;');
 }
 // ────────────────────────────────────────────────────────────────────────────
 
 function buildFilterPagesSitemapXML(urlEntries) {
-  const urlBlocks = urlEntries.map(u => {
-    return (
-      `  <url>\n` +
-      `    <loc>${escapeXml(u.loc)}</loc>\n` +
-      `    <lastmod>${u.lastmod}</lastmod>\n` +
-      `    <changefreq>${u.changefreq}</changefreq>\n` +
-      `    <priority>${u.priority}</priority>\n` +
-      `  </url>`
-    );
-  });
+  const urlBlocks = urlEntries.map(u =>
+    `  <url>\n` +
+    `    <loc>${escapeXml(u.loc)}</loc>\n` +
+    `    <lastmod>${u.lastmod}</lastmod>\n` +
+    `    <changefreq>${u.changefreq}</changefreq>\n` +
+    `    <priority>${u.priority}</priority>\n` +
+    `  </url>`
+  );
 
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
@@ -357,14 +331,12 @@ function buildFilterPagesSitemapXML(urlEntries) {
 function buildSitemapIndexXML(sitemapEntries) {
   const today = new Date().toISOString().split('T')[0];
 
-  const sitemapBlocks = sitemapEntries.map(s => {
-    return (
-      `  <sitemap>\n` +
-      `    <loc>${escapeXml(s.loc)}</loc>\n` +
-      `    <lastmod>${today}</lastmod>\n` +
-      `  </sitemap>`
-    );
-  });
+  const sitemapBlocks = sitemapEntries.map(s =>
+    `  <sitemap>\n` +
+    `    <loc>${escapeXml(s.loc)}</loc>\n` +
+    `    <lastmod>${today}</lastmod>\n` +
+    `  </sitemap>`
+  );
 
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
@@ -385,6 +357,87 @@ async function pingGoogle(sitemapUrl) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// INDEXNOW SUBMISSION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Submit URLs to IndexNow — instantly notifies Bing, Yandex, Seznam, etc.
+ * Splits into batches of 10,000 (the API maximum per request).
+ *
+ * HTTP response codes:
+ *   200 — URLs accepted immediately
+ *   202 — URLs queued, will be processed shortly
+ *   400 — Bad request / malformed JSON
+ *   403 — Key not found at keyLocation URL  ← most common setup issue
+ *   422 — URLs don't match the declared host
+ *   429 — Rate limited, slow down submissions
+ */
+async function submitToIndexNow(urls) {
+  if (!urls || urls.length === 0) {
+    console.log('⚠️  IndexNow: no URLs to submit.');
+    return;
+  }
+
+  const totalBatches = Math.ceil(urls.length / INDEXNOW_BATCH);
+  console.log(`\n🔔 IndexNow: submitting ${urls.length.toLocaleString()} URLs across ${totalBatches} batch(es)...`);
+
+  let totalAccepted = 0;
+  let totalFailed   = 0;
+
+  for (let i = 0; i < urls.length; i += INDEXNOW_BATCH) {
+    const batch    = urls.slice(i, i + INDEXNOW_BATCH);
+    const batchNum = Math.floor(i / INDEXNOW_BATCH) + 1;
+
+    try {
+      const res = await fetch(INDEXNOW_ENDPOINT, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body:    JSON.stringify({
+          host:        INDEXNOW_HOST,
+          key:         INDEXNOW_KEY,
+          keyLocation: INDEXNOW_KEY_URL,
+          urlList:     batch,
+        }),
+      });
+
+      if (res.status === 200 || res.status === 202) {
+        const label = res.status === 200 ? 'accepted' : 'queued';
+        console.log(`  ✅ Batch ${batchNum}/${totalBatches}: ${batch.length.toLocaleString()} URLs ${label} (HTTP ${res.status})`);
+        totalAccepted += batch.length;
+      } else {
+        const body = await res.text().catch(() => '');
+        console.warn(`  ⚠️  Batch ${batchNum}/${totalBatches}: HTTP ${res.status} — ${body || 'no response body'}`);
+
+        if (res.status === 403) {
+          console.warn(`      → Key file not found. Ensure this URL exists and contains only the key string:`);
+          console.warn(`        ${INDEXNOW_KEY_URL}`);
+        } else if (res.status === 422) {
+          console.warn(`      → URL host mismatch. All submitted URLs must be under: ${INDEXNOW_HOST}`);
+        } else if (res.status === 429) {
+          console.warn(`      → Rate limited. Consider reducing how often you run this script.`);
+        }
+
+        totalFailed += batch.length;
+      }
+    } catch (e) {
+      console.warn(`  ⚠️  Batch ${batchNum}/${totalBatches}: network error — ${e.message}`);
+      totalFailed += batch.length;
+    }
+
+    // Brief pause between batches to be polite to the API
+    if (i + INDEXNOW_BATCH < urls.length) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
+  console.log(`\n  IndexNow result:`);
+  console.log(`    ✅ Accepted / queued : ${totalAccepted.toLocaleString()} URLs`);
+  if (totalFailed > 0) {
+    console.log(`    ❌ Failed            : ${totalFailed.toLocaleString()} URLs`);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -395,19 +448,23 @@ async function run() {
 
   fs.mkdirSync(PUBLIC_DIR, { recursive: true });
 
-  // ── Part 1: Listing detail sitemaps (original) ──
+  // ── Part 1: Listing detail sitemaps ──────────────────────────────────────
   console.log('\n════════════════════════════════════════════');
   console.log('PART 1: Listing Detail Sitemaps');
   console.log('════════════════════════════════════════════\n');
 
   const listings = await fetchAllListings();
-  console.log(`✅ Total listings fetched: ${listings.length}`);
+  console.log(`✅ Total listings fetched: ${listings.length.toLocaleString()}`);
+
+  // Collect listing detail URLs now for IndexNow submission later
+  const listingDetailURLs = listings
+    .filter(l => l.ListingURL && l.ListingURL.trim())
+    .map(l => `${BASE_URL}/${buildSlug(l.ListingURL)}`);
 
   const detailChunks = [];
   for (let i = 0; i < listings.length; i += CHUNK_SIZE) {
     detailChunks.push(listings.slice(i, i + CHUNK_SIZE));
   }
-
   console.log(`📄 Splitting into ${detailChunks.length} sitemap file(s)...`);
 
   const sitemapEntries = [];
@@ -417,23 +474,21 @@ async function run() {
     const filename = `${PUBLIC_DIR}/sitemap-${num}.xml`;
     const xml      = buildSitemapXML(chunk);
     fs.writeFileSync(filename, xml, 'utf8');
-    console.log(`  ✅ sitemap-${num}.xml → ${chunk.length} listing URLs`);
+    console.log(`  ✅ sitemap-${num}.xml → ${chunk.length.toLocaleString()} listing URLs`);
     sitemapEntries.push({ loc: `${SITEMAP_HOST}/sitemap-${num}.xml` });
   });
 
-  // ── Part 2: Listings filter pages sitemap ──
+  // ── Part 2: Listings filter pages sitemap ────────────────────────────────
   console.log('\n════════════════════════════════════════════');
   console.log('PART 2: Listings Filter Pages Sitemap');
   console.log('════════════════════════════════════════════\n');
 
-  // ── Fetch all cities from DB ──
   const CITIES = await fetchAllCities();
 
   console.log('\n🔗 Generating filter page URLs...');
   const filterURLs = generateFilterPageURLs(CITIES);
-  console.log(`✅ Total filter page URLs generated: ${filterURLs.length}`);
+  console.log(`✅ Total filter page URLs generated: ${filterURLs.length.toLocaleString()}`);
 
-  // Split filter pages sitemap if needed (unlikely to exceed 50k but safe)
   const filterChunks = [];
   for (let i = 0; i < filterURLs.length; i += CHUNK_SIZE) {
     filterChunks.push(filterURLs.slice(i, i + CHUNK_SIZE));
@@ -444,11 +499,11 @@ async function run() {
     const filename = `${PUBLIC_DIR}/sitemap-filter-${num}.xml`;
     const xml      = buildFilterPagesSitemapXML(chunk);
     fs.writeFileSync(filename, xml, 'utf8');
-    console.log(`  ✅ sitemap-filter-${num}.xml → ${chunk.length} filter page URLs`);
+    console.log(`  ✅ sitemap-filter-${num}.xml → ${chunk.length.toLocaleString()} filter page URLs`);
     sitemapEntries.push({ loc: `${SITEMAP_HOST}/sitemap-filter-${num}.xml` });
   });
 
-  // ── Write sitemap index ──
+  // ── Write sitemap index ───────────────────────────────────────────────────
   console.log('\n════════════════════════════════════════════');
   console.log('SITEMAP INDEX');
   console.log('════════════════════════════════════════════\n');
@@ -460,18 +515,35 @@ async function run() {
   sitemapEntries.forEach(s => console.log(`   ${s.loc}`));
   console.log(`\n   Submit this to Google: ${SITEMAP_HOST}/sitemap.xml`);
 
-  // ── Ping Google ──
+  // ── Ping Google ───────────────────────────────────────────────────────────
   console.log('\n📡 Pinging Google...');
   await pingGoogle(`${SITEMAP_HOST}/sitemap.xml`);
 
-  // ── Summary ──
+  // ── IndexNow submission (Bing + others) ───────────────────────────────────
+  console.log('\n════════════════════════════════════════════');
+  console.log('INDEXNOW SUBMISSION (Bing + Yandex + others)');
+  console.log('════════════════════════════════════════════');
+
+  const allURLsForIndexNow = [
+    ...listingDetailURLs,
+    ...filterURLs.map(u => u.loc),
+  ];
+
+  await submitToIndexNow(allURLsForIndexNow);
+
+  // ── Summary ───────────────────────────────────────────────────────────────
   console.log('\n════════════════════════════════════════════');
   console.log('SUMMARY');
   console.log('════════════════════════════════════════════\n');
-  console.log(`  Listing detail sitemaps:   ${detailChunks.length} files, ${listings.length} URLs`);
-  console.log(`  Filter pages sitemaps:     ${filterChunks.length} files, ${filterURLs.length} URLs`);
-  console.log(`  Total sitemaps in index:   ${sitemapEntries.length}`);
-  console.log(`  Total URLs in all sitemaps: ${listings.length + filterURLs.length}`);
+  console.log(`  Listing detail sitemaps    : ${detailChunks.length} files, ${listings.length.toLocaleString()} URLs`);
+  console.log(`  Filter pages sitemaps      : ${filterChunks.length} files, ${filterURLs.length.toLocaleString()} URLs`);
+  console.log(`  Total sitemaps in index    : ${sitemapEntries.length}`);
+  console.log(`  Total URLs in all sitemaps : ${(listings.length + filterURLs.length).toLocaleString()}`);
+  console.log(`  Total URLs sent to IndexNow: ${allURLsForIndexNow.length.toLocaleString()}`);
+  console.log(`\n  ─── IndexNow key file reminder ───────────────────────────`);
+  console.log(`  Make sure this URL is live and returns your key as plain text:`);
+  console.log(`  https://www.getsetsold.ca/${INDEXNOW_KEY}.txt`);
+  console.log(`  File contents must be exactly: ${INDEXNOW_KEY}`);
 }
 
 run().catch((err) => {
