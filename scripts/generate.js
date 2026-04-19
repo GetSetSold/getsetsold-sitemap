@@ -318,11 +318,23 @@ function generateFilterPageURLs(cities) {
   return urls;
 }
 
+// ─── XML helper ─────────────────────────────────────────────────────────────
+// Ampersands in query strings must be escaped as &amp; inside XML tags.
+function escapeXml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+// ────────────────────────────────────────────────────────────────────────────
+
 function buildFilterPagesSitemapXML(urlEntries) {
   const urlBlocks = urlEntries.map(u => {
     return (
       `  <url>\n` +
-      `    <loc>${u.loc}</loc>\n` +
+      `    <loc>${escapeXml(u.loc)}</loc>\n` +
       `    <lastmod>${u.lastmod}</lastmod>\n` +
       `    <changefreq>${u.changefreq}</changefreq>\n` +
       `    <priority>${u.priority}</priority>\n` +
@@ -348,7 +360,7 @@ function buildSitemapIndexXML(sitemapEntries) {
   const sitemapBlocks = sitemapEntries.map(s => {
     return (
       `  <sitemap>\n` +
-      `    <loc>${s.loc}</loc>\n` +
+      `    <loc>${escapeXml(s.loc)}</loc>\n` +
       `    <lastmod>${today}</lastmod>\n` +
       `  </sitemap>`
     );
