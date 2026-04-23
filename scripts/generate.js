@@ -7,7 +7,7 @@ const TABLE             = 'property';
 const BASE_URL          = 'https://www.getsetsold.ca/real-estate';
 const SITEMAP_HOST      = 'https://listings.getsetsold.ca';
 const PUBLIC_DIR        = './public';
-const CHUNK_SIZE        = 45000; // stay safely under Google's 50k limit
+const CHUNK_SIZE        = 30000; // stay under ~7 MB per file (Google's limit is 50k URLs or 10 MB uncompressed)
 
 // ─── Pre-Construction Config ─────────────────────────────────────────────────
 // Uses the same Supabase instance by default. Override with PRECON_SB_URL / PRECON_SB_KEY
