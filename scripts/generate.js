@@ -375,23 +375,23 @@ async function paginatedFetch(baseUrl, apiKey, table, select, limit = 1000) {
 async function fetchPreconData() {
   console.log('🏗️  Fetching pre-construction data from Supabase...');
 
-  // 1. Fetch all builders
+  // 1. Fetch all builders (no timestamp column — use slug only)
   const builders = await paginatedFetch(
-    PRECON_SB_URL, PRECON_SB_KEY, 'builders', 'slug,updated_at'
+    PRECON_SB_URL, PRECON_SB_KEY, 'builders', 'slug'
   );
   console.log(`  ✅ Builders: ${builders.length}`);
 
-  // 2. Fetch all projects with builder slug
+  // 2. Fetch all projects with builder slug (has created_at)
   const projects = await paginatedFetch(
     PRECON_SB_URL, PRECON_SB_KEY,
-    'projects', 'slug,updated_at,builder:builder_id(slug)'
+    'projects', 'slug,created_at,builder:builder_id(slug)'
   );
   console.log(`  ✅ Projects: ${projects.length}`);
 
-  // 3. Fetch all home models with project + builder slug (nested join)
+  // 3. Fetch all home models with project + builder slug (no timestamp column)
   const models = await paginatedFetch(
     PRECON_SB_URL, PRECON_SB_KEY,
-    'home_models', 'slug,updated_at,project:project_id(slug,builder:builder_id(slug))'
+    'home_models', 'slug,project:project_id(slug,builder:builder_id(slug))'
   );
   console.log(`  ✅ Home models: ${models.length}`);
 
@@ -426,22 +426,20 @@ function buildPreconURLs({ builders, projects, models }) {
   // Builder pages
   for (const b of builders) {
     if (!b.slug) continue;
-    const lm = (b.updated_at || today).split('T')[0];
-    add(`/${b.slug}`, '0.8', 'weekly', lm);
+    add(`/${b.slug}`, '0.8', 'weekly', today);
   }
 
   // Project pages
   for (const p of projects) {
     if (!p.slug || !p.builder?.slug) continue;
-    const lm = (p.updated_at || today).split('T')[0];
+    const lm = (p.created_at || today).split('T')[0];
     add(`/${p.builder.slug}/${p.slug}`, '0.8', 'weekly', lm);
   }
 
   // Model pages
   for (const m of models) {
     if (!m.slug || !m.project?.slug || !m.project?.builder?.slug) continue;
-    const lm = (m.updated_at || today).split('T')[0];
-    add(`/${m.project.builder.slug}/${m.project.slug}/${m.slug}`, '0.7', 'weekly', lm);
+    add(`/${m.project.builder.slug}/${m.project.slug}/${m.slug}`, '0.7', 'weekly', today);
   }
 
   return urls;
@@ -633,12 +631,17 @@ async function run() {
 
   let preconURLs = [];
   try {
+    console.log(`  PRECON_SB_URL : ${PRECON_SB_URL}`);
+    console.log(`  PRECON_SB_KEY : ${PRECON_SB_KEY ? '***' + PRECON_SB_KEY.slice(-6) : '(not set — using main SUPABASE_KEY)'}`);
+
     const preconData = await fetchPreconData();
     preconURLs = buildPreconURLs(preconData);
     console.log(`✅ Total pre-construction URLs: ${preconURLs.length.toLocaleString()}`);
   } catch (err) {
-    console.warn('⚠️  Pre-construction sitemap generation failed (non-fatal):', err.message);
-    console.warn('   Skipping pre-con sitemaps. Check PRECON_SB_URL / PRECON_SB_KEY if on a separate DB.');
+    console.warn('⚠️  Pre-construction sitemap generation failed (non-fatal):');
+    console.warn(`   Error: ${err.message}`);
+    console.warn(`   Stack: ${err.stack}`);
+    console.warn('   Check PRECON_SB_URL / PRECON_SB_KEY env vars if on a separate Supabase instance.');
   }
 
   if (preconURLs.length > 0) {
