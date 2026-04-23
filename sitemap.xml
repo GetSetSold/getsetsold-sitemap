@@ -32,4 +32,8 @@
     <loc>https://listings.getsetsold.ca/sitemap-filter-6.xml</loc>
     <lastmod>2026-04-23</lastmod>
   </sitemap>
+  <sitemap>
+    <loc>https://listings.getsetsold.ca/sitemap-precon-1.xml</loc>
+    <lastmod>2026-04-23</lastmod>
+  </sitemap>
 </sitemapindex>
