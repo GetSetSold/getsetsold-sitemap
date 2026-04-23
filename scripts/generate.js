@@ -9,6 +9,14 @@ const SITEMAP_HOST      = 'https://listings.getsetsold.ca';
 const PUBLIC_DIR        = './public';
 const CHUNK_SIZE        = 45000; // stay safely under Google's 50k limit
 
+// ─── Pre-Construction Config ─────────────────────────────────────────────────
+// Uses the same Supabase instance by default. Override with PRECON_SB_URL / PRECON_SB_KEY
+// if pre-construction data lives in a separate database.
+const PRECON_SB_URL     = process.env.PRECON_SB_URL  || SUPABASE_URL;
+const PRECON_SB_KEY     = process.env.PRECON_SB_KEY  || SUPABASE_KEY;
+const PRECON_BASE_URL   = 'https://www.getsetsold.ca/pre-construction';
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ─── IndexNow Config ───────────────────────────────────────────────────────
 const INDEXNOW_KEY      = '975deb2fa4f34a198c0468286722e45c';
 const INDEXNOW_HOST     = 'www.getsetsold.ca';
@@ -325,6 +333,121 @@ function buildFilterPagesSitemapXML(urlEntries) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PRE-CONSTRUCTION SITEMAPS (builders, projects, models)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Paginated fetch helper for any Supabase table.
+ */
+async function paginatedFetch(baseUrl, apiKey, table, select, limit = 1000) {
+  const all  = [];
+  let from   = 0;
+
+  while (true) {
+    const url =
+      `${baseUrl}/rest/v1/${table}` +
+      `?select=${select}&limit=${limit}&offset=${from}`;
+
+    const res = await fetch(url, {
+      headers: { apikey: apiKey, Authorization: `Bearer ${apiKey}` },
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Supabase error ${res.status} on ${table}: ${err}`);
+    }
+
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) break;
+
+    all.push(...data);
+    if (data.length < limit) break;
+    from += limit;
+  }
+
+  return all;
+}
+
+/**
+ * Fetch all pre-construction URLs from Supabase (builders → projects → models).
+ * Uses nested PostgREST joins so each level carries parent slugs.
+ */
+async function fetchPreconData() {
+  console.log('🏗️  Fetching pre-construction data from Supabase...');
+
+  // 1. Fetch all builders
+  const builders = await paginatedFetch(
+    PRECON_SB_URL, PRECON_SB_KEY, 'builders', 'slug,updated_at'
+  );
+  console.log(`  ✅ Builders: ${builders.length}`);
+
+  // 2. Fetch all projects with builder slug
+  const projects = await paginatedFetch(
+    PRECON_SB_URL, PRECON_SB_KEY,
+    'projects', 'slug,updated_at,builder:builder_id(slug)'
+  );
+  console.log(`  ✅ Projects: ${projects.length}`);
+
+  // 3. Fetch all home models with project + builder slug (nested join)
+  const models = await paginatedFetch(
+    PRECON_SB_URL, PRECON_SB_KEY,
+    'home_models', 'slug,updated_at,project:project_id(slug,builder:builder_id(slug))'
+  );
+  console.log(`  ✅ Home models: ${models.length}`);
+
+  return { builders, projects, models };
+}
+
+/**
+ * Build the pre-construction URL list.
+ *
+ * Priority tiers:
+ *   0.9  /pre-construction             (main index)
+ *   0.8  /pre-construction/{builder}   (builder detail)
+ *   0.8  /pre-construction/{builder}/{project}  (project detail)
+ *   0.7  /pre-construction/{builder}/{project}/{model}  (model detail)
+ */
+function buildPreconURLs({ builders, projects, models }) {
+  const today = new Date().toISOString().split('T')[0];
+  const urls  = [];
+
+  function add(path, priority, changefreq, lastmod) {
+    urls.push({
+      loc:        `${PRECON_BASE_URL}${path}`,
+      priority,
+      changefreq,
+      lastmod:    lastmod || today,
+    });
+  }
+
+  // Main pre-construction index page
+  add('', '0.9', 'daily', today);
+
+  // Builder pages
+  for (const b of builders) {
+    if (!b.slug) continue;
+    const lm = (b.updated_at || today).split('T')[0];
+    add(`/${b.slug}`, '0.8', 'weekly', lm);
+  }
+
+  // Project pages
+  for (const p of projects) {
+    if (!p.slug || !p.builder?.slug) continue;
+    const lm = (p.updated_at || today).split('T')[0];
+    add(`/${p.builder.slug}/${p.slug}`, '0.8', 'weekly', lm);
+  }
+
+  // Model pages
+  for (const m of models) {
+    if (!m.slug || !m.project?.slug || !m.project?.builder?.slug) continue;
+    const lm = (m.updated_at || today).split('T')[0];
+    add(`/${m.project.builder.slug}/${m.project.slug}/${m.slug}`, '0.7', 'weekly', lm);
+  }
+
+  return urls;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // SITEMAP INDEX & PING
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -503,6 +626,37 @@ async function run() {
     sitemapEntries.push({ loc: `${SITEMAP_HOST}/sitemap-filter-${num}.xml` });
   });
 
+  // ── Part 3: Pre-Construction sitemaps ───────────────────────────────────
+  console.log('\n════════════════════════════════════════════');
+  console.log('PART 3: Pre-Construction Sitemaps');
+  console.log('════════════════════════════════════════════\n');
+
+  let preconURLs = [];
+  try {
+    const preconData = await fetchPreconData();
+    preconURLs = buildPreconURLs(preconData);
+    console.log(`✅ Total pre-construction URLs: ${preconURLs.length.toLocaleString()}`);
+  } catch (err) {
+    console.warn('⚠️  Pre-construction sitemap generation failed (non-fatal):', err.message);
+    console.warn('   Skipping pre-con sitemaps. Check PRECON_SB_URL / PRECON_SB_KEY if on a separate DB.');
+  }
+
+  if (preconURLs.length > 0) {
+    const preconChunks = [];
+    for (let i = 0; i < preconURLs.length; i += CHUNK_SIZE) {
+      preconChunks.push(preconURLs.slice(i, i + CHUNK_SIZE));
+    }
+
+    preconChunks.forEach((chunk, i) => {
+      const num      = i + 1;
+      const filename = `${PUBLIC_DIR}/sitemap-precon-${num}.xml`;
+      const xml      = buildFilterPagesSitemapXML(chunk); // reuse the generic builder
+      fs.writeFileSync(filename, xml, 'utf8');
+      console.log(`  ✅ sitemap-precon-${num}.xml → ${chunk.length.toLocaleString()} pre-con URLs`);
+      sitemapEntries.push({ loc: `${SITEMAP_HOST}/sitemap-precon-${num}.xml` });
+    });
+  }
+
   // ── Write sitemap index ───────────────────────────────────────────────────
   console.log('\n════════════════════════════════════════════');
   console.log('SITEMAP INDEX');
@@ -527,6 +681,7 @@ async function run() {
   const allURLsForIndexNow = [
     ...listingDetailURLs,
     ...filterURLs.map(u => u.loc),
+    ...preconURLs.map(u => u.loc),
   ];
 
   await submitToIndexNow(allURLsForIndexNow);
@@ -537,13 +692,34 @@ async function run() {
   console.log('════════════════════════════════════════════\n');
   console.log(`  Listing detail sitemaps    : ${detailChunks.length} files, ${listings.length.toLocaleString()} URLs`);
   console.log(`  Filter pages sitemaps      : ${filterChunks.length} files, ${filterURLs.length.toLocaleString()} URLs`);
+  console.log(`  Pre-construction sitemaps  : ${preconURLs.length > 0 ? `${Math.ceil(preconURLs.length / CHUNK_SIZE)} files, ${preconURLs.length.toLocaleString()} URLs` : 'skipped (error or no data)'}`);
   console.log(`  Total sitemaps in index    : ${sitemapEntries.length}`);
-  console.log(`  Total URLs in all sitemaps : ${(listings.length + filterURLs.length).toLocaleString()}`);
+  console.log(`  Total URLs in all sitemaps : ${(listings.length + filterURLs.length + preconURLs.length).toLocaleString()}`);
   console.log(`  Total URLs sent to IndexNow: ${allURLsForIndexNow.length.toLocaleString()}`);
   console.log(`\n  ─── IndexNow key file reminder ───────────────────────────`);
   console.log(`  Make sure this URL is live and returns your key as plain text:`);
   console.log(`  https://www.getsetsold.ca/${INDEXNOW_KEY}.txt`);
   console.log(`  File contents must be exactly: ${INDEXNOW_KEY}`);
+
+  if (preconURLs.length > 0) {
+    console.log(`\n  ─── Pre-construction URLs breakdown ──────────────────────`);
+    const builders = preconURLs.filter(u => {
+      const parts = u.loc.replace(PRECON_BASE_URL, '').split('/').filter(Boolean);
+      return parts.length === 1;
+    });
+    const projects = preconURLs.filter(u => {
+      const parts = u.loc.replace(PRECON_BASE_URL, '').split('/').filter(Boolean);
+      return parts.length === 2;
+    });
+    const models = preconURLs.filter(u => {
+      const parts = u.loc.replace(PRECON_BASE_URL, '').split('/').filter(Boolean);
+      return parts.length === 3;
+    });
+    console.log(`     Main index : 1`);
+    console.log(`     Builders   : ${builders.length}`);
+    console.log(`     Projects   : ${projects.length}`);
+    console.log(`     Models     : ${models.length}`);
+  }
 }
 
 run().catch((err) => {
