@@ -111,56 +111,42 @@ function buildSitemapXML(listings) {
  * no manual list maintenance needed.
  */
 async function fetchAllCities() {
-  const allCities = new Set();
-
-  let from = 0;
-  const limit = 1000;
-
   console.log('🏙️  Fetching all unique cities from Supabase...');
 
-  while (true) {
-    const url =
-      `${SUPABASE_URL}/rest/v1/${TABLE}` +
-      `?select=City&limit=${limit}&offset=${from}`;
+  // Single RPC call using get_distinct_cities() — uses City index, no full table scan
+  const url = `${SUPABASE_URL}/rest/v1/rpc/get_distinct_cities`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      apikey:          SUPABASE_KEY,
+      Authorization:   `Bearer ${SUPABASE_KEY}`,
+      'Content-Type':  'application/json',
+    },
+    body: JSON.stringify({}),
+  });
 
-    const res = await fetch(url, {
-      headers: {
-        apikey:        SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-      },
-    });
-
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Supabase error ${res.status}: ${err}`);
-    }
-
-    const data = await res.json();
-    if (!Array.isArray(data) || data.length === 0) break;
-
-    for (const row of data) {
-      if (row.City && row.City.trim()) {
-        const slug = row.City
-          .trim()
-          .toLowerCase()
-          .replace(/\s*\(/g, ' (')
-          .replace(/\)\s*/g, ') ')
-          .replace(/\s*\(\s*/g, '-')
-          .replace(/\s*\)\s*/g, '')
-          .replace(/[.\s]+/g, '-')
-          .replace(/[^a-z0-9-]/g, '')
-          .replace(/-+/g, '-')
-          .replace(/^-|-$/g, '');
-
-        if (slug) allCities.add(slug);
-      }
-    }
-
-    if (data.length < limit) break;
-    from += limit;
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Supabase error ${res.status}: ${err}`);
   }
 
-  const cities = [...allCities].sort();
+  const cityNames = await res.json();
+
+  const cities = cityNames
+    .filter(Boolean)
+    .map(city => city
+      .trim()
+      .toLowerCase()
+      .replace(/\s*\(\s*/g, '-')
+      .replace(/\s*\)\s*/g, '')
+      .replace(/[.\s]+/g, '-')
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+    )
+    .filter(Boolean)
+    .sort();
+
   console.log(`✅ Found ${cities.length} unique cities in database`);
   return cities;
 }
